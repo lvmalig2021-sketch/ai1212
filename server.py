@@ -12,7 +12,7 @@ app = Flask(__name__)
 assistant = UkrainianHybridAI(BASE_DIR)
 
 
-def json_response(payload: dict[str, str], status: int = 200) -> Response:
+def json_response(payload: dict[str, object], status: int = 200) -> Response:
     body = json.dumps(payload, ensure_ascii=False)
     return Response(body, status=status, content_type="application/json; charset=utf-8")
 
@@ -23,13 +23,14 @@ def text_response(body: str, status: int = 200) -> Response:
 
 @app.get("/health")
 def health() -> Response:
-    return json_response({"status": "ok", "language": "uk", "engine": "local-hybrid-ai"})
+    return json_response({"status": "ok", **assistant.status()})
 
 
 @app.post("/chat")
 def chat() -> Response:
     payload = request.get_json(silent=True) or {}
     message = str(payload.get("message", "")).strip()
+    force_web = bool(payload.get("web", False))
 
     if not message:
         return json_response(
@@ -38,7 +39,7 @@ def chat() -> Response:
         )
 
     try:
-        return json_response({"response": assistant.chat(message)})
+        return json_response({"response": assistant.chat(message, force_web=force_web)})
     except Exception as exc:  # pragma: no cover
         return json_response(
             {"response": f"\u0421\u0442\u0430\u043b\u0430\u0441\u044f \u043f\u043e\u043c\u0438\u043b\u043a\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430: {exc}"},
@@ -49,6 +50,7 @@ def chat() -> Response:
 @app.get("/chat_text")
 def chat_text() -> Response:
     message = str(request.args.get("message", "")).strip()
+    force_web = request.args.get("web", "").strip().lower() in {"1", "true", "yes", "on"}
     if not message:
         return text_response(
             "\u0411\u0443\u0434\u044c \u043b\u0430\u0441\u043a\u0430, \u043f\u0435\u0440\u0435\u0434\u0430\u0439\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440 message.",
@@ -56,7 +58,7 @@ def chat_text() -> Response:
         )
 
     try:
-        return text_response(assistant.chat(message))
+        return text_response(assistant.chat(message, force_web=force_web))
     except Exception as exc:  # pragma: no cover
         return text_response(
             f"\u0421\u0442\u0430\u043b\u0430\u0441\u044f \u043f\u043e\u043c\u0438\u043b\u043a\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430: {exc}",

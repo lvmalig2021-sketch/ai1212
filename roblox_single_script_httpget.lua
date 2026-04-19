@@ -1,6 +1,6 @@
 local Players = game:GetService("Players")
 
-local API_BASE_URL = "https://your-public-domain.example.com"
+local API_BASE_URL = "https://roblox-ukrainian-ai.onrender.com"
 local CHAT_ENDPOINT = API_BASE_URL .. "/chat_text?message="
 
 local function decodeUnicodeEscapes(value)
