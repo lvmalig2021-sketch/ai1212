@@ -48,6 +48,16 @@ class WebSearchClient:
         "latest",
         "current",
     )
+    DEFINITION_HINTS = (
+        "що таке",
+        "що означає",
+        "хто такий",
+        "хто така",
+        "хто таке",
+        "розкажи про",
+        "поясни",
+        "що за",
+    )
 
     def __init__(self) -> None:
         self.enabled = os.getenv("ENABLE_WEB_SEARCH", "1").lower() in {"1", "true", "yes", "on"}
@@ -106,6 +116,9 @@ class WebSearchClient:
             return False
 
         if any(hint in normalized for hint in self.TIME_SENSITIVE_HINTS):
+            return True
+
+        if not has_local_answer and any(normalized.startswith(hint) for hint in self.DEFINITION_HINTS):
             return True
 
         if message.strip().endswith("?") and not has_local_answer and len(nlp.keywords(message)) >= 2:
@@ -279,7 +292,22 @@ class WebSearchClient:
 
     def _clean_query(self, query: str) -> str:
         cleaned = query.strip()
-        for prefix in ["загугли", "гугли", "пошукай", "знайди", "в інтернеті", "онлайн"]:
+        for prefix in [
+            "загугли",
+            "гугли",
+            "пошукай",
+            "знайди",
+            "в інтернеті",
+            "онлайн",
+            "що таке",
+            "що означає",
+            "хто такий",
+            "хто така",
+            "хто таке",
+            "розкажи про",
+            "поясни",
+            "що за",
+        ]:
             if cleaned.lower().startswith(prefix):
                 cleaned = cleaned[len(prefix) :].strip(" :,-")
         return cleaned or query.strip()

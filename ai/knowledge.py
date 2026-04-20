@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from .nlp import UkrainianNLP
@@ -39,7 +38,9 @@ class KnowledgeBase:
         if reply := self._comparison_response(message):
             return reply
 
-        match = self._match_entry(f"{message} {context_text}")
+        match = self._match_entry(message)
+        if not match and self._is_context_follow_up(normalized):
+            match = self._match_entry(last_assistant_message or context_text)
         if not match:
             return None
 
@@ -76,7 +77,34 @@ class KnowledgeBase:
             return True
         if self._comparison_response(message):
             return True
-        return self._match_entry(f"{message} {context_text}") is not None
+        if self._match_entry(message) is not None:
+            return True
+        if self._is_context_follow_up(normalized):
+            return self._match_entry(context_text) is not None
+        return False
+
+    def _is_context_follow_up(self, normalized: str) -> bool:
+        follow_up_phrases = {
+            "а це",
+            "а він",
+            "а вона",
+            "а воно",
+            "про це",
+            "про нього",
+            "про неї",
+            "детальніше про це",
+            "ще про це",
+            "що це",
+            "що це таке",
+        }
+        if normalized in follow_up_phrases:
+            return True
+
+        tokens = [token for token in normalized.split(" ") if token]
+        if len(tokens) <= 2 and any(token in {"це", "він", "вона", "воно", "той", "та", "те"} for token in tokens):
+            return True
+
+        return False
 
     def _match_entry(self, message: str) -> dict[str, object] | None:
         normalized = self.nlp.normalize(message)
