@@ -5,6 +5,7 @@ from pathlib import Path
 from .generative import GenerativeResponder
 from .intent import IntentDetector
 from .knowledge import KnowledgeBase
+from .learning import LearningStore
 from .lua_module import LuaAssistant
 from .memory import ConversationMemory
 from .nlp import UkrainianNLP
@@ -19,6 +20,7 @@ class UkrainianHybridAI:
         self.intent_detector = IntentDetector(self.project_root / "data" / "intents.json", self.nlp)
         self.lua_assistant = LuaAssistant(self.project_root / "data" / "lua_examples.json", self.nlp)
         self.knowledge = KnowledgeBase(self.project_root / "data" / "world_knowledge.json", self.nlp)
+        self.learning = LearningStore(self.project_root / "data" / "user_knowledge.json", self.nlp)
         self.web_search = WebSearchClient()
         self.generative = GenerativeResponder()
         self.last_intent_name = "capability_help"
@@ -27,6 +29,11 @@ class UkrainianHybridAI:
         cleaned = message.strip()
         if not cleaned:
             return "Будь ласка, введіть повідомлення."
+
+        if learned_reply := self.learning.learn(cleaned):
+            self.memory.add("user", cleaned)
+            self.memory.add("assistant", learned_reply)
+            return learned_reply
 
         history = self.memory.messages_for_model(8)
         intent = self.intent_detector.detect(cleaned, history)
@@ -41,9 +48,17 @@ class UkrainianHybridAI:
     def status(self) -> dict[str, object]:
         web_status = self.web_search.status()
         generative_status = self.generative.status()
+        learning_status = self.learning.status()
+        if generative_status["ready"] and generative_status["provider"] == "ollama":
+            engine_name = "hybrid-local-ai"
+        elif generative_status["ready"]:
+            engine_name = "hybrid-generative-ai"
+        else:
+            engine_name = "hybrid-ai-plus"
+
         return {
             "language": "uk",
-            "engine": "hybrid-generative-ai" if generative_status["ready"] else "hybrid-ai-plus",
+            "engine": engine_name,
             "web_search": web_status["provider"],
             "web_enabled": web_status["enabled"],
             "google_ready": web_status["google_ready"],
@@ -51,6 +66,7 @@ class UkrainianHybridAI:
             "generative_ready": generative_status["ready"],
             "generative_provider": generative_status["provider"],
             "generative_model": generative_status["model"],
+            "learned_notes": learning_status["notes_count"],
         }
 
     def _build_response(
@@ -69,6 +85,7 @@ class UkrainianHybridAI:
 
         local_answer: str | None = None
         lua_guidance: str | None = None
+        learned_answer = self.learning.answer(message)
 
         if self._should_fix_lua(intent_name, normalized):
             lua_guidance = self.lua_assistant.fix_code(
@@ -89,7 +106,7 @@ class UkrainianHybridAI:
                 topic_hint=topic_hint,
             )
         else:
-            local_answer = self.knowledge.answer(
+            local_answer = learned_answer or self.knowledge.answer(
                 message,
                 context_text=context_text,
                 last_assistant_message=self.memory.last_message("assistant"),
@@ -258,12 +275,11 @@ class UkrainianHybridAI:
             return (
                 f"Можу поговорити про тему `{topic_hint}` простими словами, допомогти з Roblox/Lua/Python "
                 "або, якщо потрібна свіжа інформація, спробувати знайти її онлайн. "
-                "Можеш написати щось на кшталт: `поясни простими словами`, `знайди це в інтернеті`, "
-                "`порівняй два варіанти` або `напиши приклад коду`."
+                "Також можу запам'ятати новий факт, якщо напишеш щось на кшталт `запам'ятай, що ...`."
             )
 
         return (
-            "Тепер я можу не лише генерувати Lua-код, а й вільніше спілкуватися українською, "
-            "пояснювати загальні теми та шукати актуальну інформацію онлайн. "
-            "Спробуй звичайне питання або напиши `знайди ... в інтернеті`."
+            "Тепер я можу працювати як локальний AI-помічник: вільніше спілкуватися українською, "
+            "пояснювати теми, писати код, шукати актуальну інформацію онлайн і зберігати нові факти "
+            "в локальну базу знань за командою `запам'ятай, що ...`."
         )

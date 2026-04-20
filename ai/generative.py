@@ -10,26 +10,42 @@ from typing import Any
 class GenerativeResponder:
     def __init__(self) -> None:
         enabled_env = os.getenv("ENABLE_GENERATIVE_AI", "").strip().lower()
-        self.provider = os.getenv("GENERATIVE_PROVIDER", "openai-compatible").strip() or "openai-compatible"
-        self.base_url = (
-            os.getenv("OPENAI_BASE_URL")
-            or os.getenv("LLM_BASE_URL")
-            or "https://api.openai.com/v1"
-        ).rstrip("/")
-        self.api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or "").strip()
-        self.model = (os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "").strip()
-        self.timeout = self._read_float("GENERATIVE_TIMEOUT", 30.0)
+        self.provider = os.getenv("GENERATIVE_PROVIDER", "ollama").strip().lower() or "ollama"
+        self.timeout = self._read_float("GENERATIVE_TIMEOUT", 60.0)
         self.temperature = self._read_float("GENERATIVE_TEMPERATURE", 0.45)
         self.max_tokens = self._read_int("GENERATIVE_MAX_TOKENS", 900)
         self.last_error = ""
 
+        if self.provider == "ollama":
+            self.base_url = (
+                os.getenv("OLLAMA_BASE_URL")
+                or os.getenv("LLM_BASE_URL")
+                or "http://127.0.0.1:11434"
+            ).rstrip("/")
+            self.api_key = ""
+            self.model = (os.getenv("OLLAMA_MODEL") or os.getenv("LLM_MODEL") or "").strip()
+            self.keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "5m").strip() or "5m"
+        else:
+            self.base_url = (
+                os.getenv("OPENAI_BASE_URL")
+                or os.getenv("LLM_BASE_URL")
+                or "https://api.openai.com/v1"
+            ).rstrip("/")
+            self.api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or "").strip()
+            self.model = (os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "").strip()
+            self.keep_alive = ""
+
         if enabled_env:
             self.enabled = enabled_env in {"1", "true", "yes", "on"}
+        elif self.provider == "ollama":
+            self.enabled = bool(self.model)
         else:
             self.enabled = bool(self.api_key and self.model)
 
     @property
     def is_ready(self) -> bool:
+        if self.provider == "ollama":
+            return self.enabled and bool(self.model) and self._ollama_model_available()
         return self.enabled and bool(self.api_key and self.model)
 
     def status(self) -> dict[str, object]:
@@ -67,16 +83,31 @@ class GenerativeResponder:
             lua_guidance=lua_guidance,
             fallback_answer=fallback_answer,
         )
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
 
         try:
-            data = self._post_json(self._chat_url(), payload)
-            content = self._extract_content(data)
+            if self.provider == "ollama":
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "keep_alive": self.keep_alive,
+                    "options": {
+                        "temperature": self.temperature,
+                        "num_predict": self.max_tokens,
+                    },
+                }
+                data = self._post_json(f"{self.base_url}/api/chat", payload)
+                content = self._extract_ollama_content(data)
+            else:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                data = self._post_json(self._chat_url(), payload, bearer_token=self.api_key)
+                content = self._extract_openai_content(data)
+
             if not content:
                 self.last_error = "Порожня відповідь від генеративної моделі."
                 return None
@@ -118,9 +149,7 @@ class GenerativeResponder:
                 continue
             messages.append({"role": role, "content": content[:1800]})
 
-        sections = [
-            f"Намір користувача: {intent_name}.",
-        ]
+        sections = [f"Намір користувача: {intent_name}."]
         if context_text:
             sections.append(f"Короткий контекст діалогу:\n{context_text}")
         if local_answer:
@@ -139,7 +168,6 @@ class GenerativeResponder:
             "Відповідай як живий помічник: можеш перефразовувати, узагальнювати, структурувати й пояснювати."
         )
         sections.append(f"Поточне повідомлення користувача:\n{message}")
-
         messages.append({"role": "user", "content": "\n\n".join(sections)})
         return messages
 
@@ -180,11 +208,33 @@ class GenerativeResponder:
             return self.base_url
         return f"{self.base_url}/chat/completions"
 
-    def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _ollama_model_available(self) -> bool:
+        try:
+            payload = self._get_json(f"{self.base_url}/api/tags")
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+        models = payload.get("models", [])
+        if not isinstance(models, list):
+            return False
+
+        expected = self.model.strip().lower()
+        available_names: set[str] = set()
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            for field_name in ("name", "model"):
+                value = str(item.get(field_name, "")).strip().lower()
+                if value:
+                    available_names.add(value)
+        return expected in available_names
+
+    def _post_json(self, url: str, payload: dict[str, Any], bearer_token: str = "") -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json; charset=utf-8"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
 
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
@@ -198,7 +248,24 @@ class GenerativeResponder:
 
         return json.loads(raw)
 
-    def _extract_content(self, payload: dict[str, Any]) -> str:
+    def _get_json(self, url: str, bearer_token: str = "") -> dict[str, Any]:
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=min(self.timeout, 5.0)) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Не вдалося дістатися до LLM API: {exc.reason}") from exc
+
+        return json.loads(raw)
+
+    def _extract_openai_content(self, payload: dict[str, Any]) -> str:
         choices = payload.get("choices", [])
         if not isinstance(choices, list) or not choices:
             return ""
@@ -207,7 +274,6 @@ class GenerativeResponder:
         content = message.get("content", "")
         if isinstance(content, str):
             return content.strip()
-
         if isinstance(content, list):
             chunks: list[str] = []
             for item in content:
@@ -216,8 +282,15 @@ class GenerativeResponder:
                     if text:
                         chunks.append(text)
             return "\n".join(chunks).strip()
-
         return ""
+
+    def _extract_ollama_content(self, payload: dict[str, Any]) -> str:
+        message = payload.get("message", {})
+        content = str(message.get("content", "")).strip()
+        thinking = str(message.get("thinking", "")).strip()
+        if content:
+            return content
+        return thinking
 
     def _read_float(self, key: str, default: float) -> float:
         value = os.getenv(key, "").strip()
