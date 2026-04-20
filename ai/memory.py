@@ -14,12 +14,26 @@ class ConversationMemory:
     def recent_messages(self, limit: int = 5) -> list[dict[str, str]]:
         return list(self.messages)[-limit:]
 
+    def messages_for_model(self, limit: int = 6, max_chars: int = 1800) -> list[dict[str, str]]:
+        prepared: list[dict[str, str]] = []
+        for message in self.recent_messages(limit):
+            content = message["content"].strip()
+            if not content:
+                continue
+            prepared.append(
+                {
+                    "role": message["role"],
+                    "content": content[:max_chars],
+                }
+            )
+        return prepared
+
     def context_as_text(self, limit: int = 5) -> str:
         chunks: list[str] = []
         for message in self.recent_messages(limit):
             preview = message["content"].strip().replace("\n", " ")
-            if len(preview) > 140:
-                preview = preview[:137] + "..."
+            if len(preview) > 180:
+                preview = preview[:177] + "..."
             chunks.append(f'{message["role"]}: {preview}')
         return "\n".join(chunks)
 
